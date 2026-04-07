@@ -16,6 +16,7 @@ DB_PATH = REPO_ROOT / "papers.db"
 
 SLEEP_SECONDS = 1.1
 
+# TODO: Figure out if tldr is really the best feature to pull from Semantic Scholar. Seems like sometimes things are missing. 
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
