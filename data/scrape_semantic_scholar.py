@@ -2,8 +2,6 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from urllib.parse import quote
-
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -52,6 +50,9 @@ def request_json(method, url, *, params=None, headers=None, json_body=None, max_
         if resp.status_code == 404:
             return None
 
+        if resp.status_code == 400:
+            return None  # bad input (e.g. no valid DOIs in batch) — treat as not found
+
         if resp.status_code in (429, 500, 502, 503, 504):
             sleep_s = 2 ** attempt
             print(f"Retryable error {resp.status_code}. Sleeping {sleep_s}s...")
@@ -72,9 +73,15 @@ def init_db():
             doi_normalized TEXT PRIMARY KEY,
             openalex_id TEXT,
             s2_found INTEGER NOT NULL,
-            tldr_text TEXT
+            tldr_text TEXT,
+            abstract_text TEXT
         )
     """)
+
+    # Add abstract_text column if it doesn't exist (migration for existing DBs)
+    existing = {row[1] for row in cur.execute("PRAGMA table_info(semanticscholar_papers)").fetchall()}
+    if "abstract_text" not in existing:
+        cur.execute("ALTER TABLE semanticscholar_papers ADD COLUMN abstract_text TEXT")
 
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_semanticscholar_openalex_id
@@ -85,57 +92,55 @@ def init_db():
     conn.close()
 
 
-def fetch_s2_tldr_for_doi(doi_normalized):
-    if not doi_normalized:
-        return None
+BATCH_SIZE = 500  # S2 batch endpoint accepts up to 500 IDs per request
 
-    paper_id = f"DOI:{doi_normalized}"
-    encoded_paper_id = quote(paper_id, safe="")
-    url = f"{S2_BASE}/paper/{encoded_paper_id}"
 
-    params = {"fields": "tldr"}
+def fetch_s2_batch(doi_list):
+    """POST up to 500 DOIs at once to the S2 batch endpoint."""
+    url = f"{S2_BASE}/paper/batch"
+    params = {"fields": "tldr,abstract"}
     headers = {}
 
     if S2_API_KEY:
         headers["x-api-key"] = S2_API_KEY
 
-    return request_json("GET", url, params=params, headers=headers)
+    ids = [f"DOI:{doi}" for doi in doi_list]
+    return request_json("POST", url, params=params, headers=headers, json_body={"ids": ids})
 
 
-def upsert_s2_result(openalex_id, doi_normalized, payload):
+def upsert_s2_batch(rows, payloads):
+    """Save a batch of S2 results to the DB. payloads is a list parallel to rows (may contain None)."""
     conn = get_conn()
     cur = conn.cursor()
 
-    if payload is None:
-        cur.execute("""
-            INSERT INTO semanticscholar_papers (
-                doi_normalized,
-                openalex_id,
-                s2_found,
-                tldr_text
-            )
-            VALUES (?, ?, 0, NULL)
-            ON CONFLICT(doi_normalized) DO UPDATE SET
-                openalex_id = excluded.openalex_id,
-                s2_found = excluded.s2_found,
-                tldr_text = excluded.tldr_text
-        """, (doi_normalized, openalex_id))
-    else:
-        tldr_text = (payload.get("tldr") or {}).get("text")
+    for (openalex_id, doi_normalized), payload in zip(rows, payloads):
+        if payload is None:
+            cur.execute("""
+                INSERT INTO semanticscholar_papers (
+                    doi_normalized, openalex_id, s2_found, tldr_text, abstract_text
+                )
+                VALUES (?, ?, 0, NULL, NULL)
+                ON CONFLICT(doi_normalized) DO UPDATE SET
+                    openalex_id = excluded.openalex_id,
+                    s2_found = excluded.s2_found,
+                    tldr_text = excluded.tldr_text,
+                    abstract_text = excluded.abstract_text
+            """, (doi_normalized, openalex_id))
+        else:
+            tldr_text = (payload.get("tldr") or {}).get("text")
+            abstract_text = payload.get("abstract")
 
-        cur.execute("""
-            INSERT INTO semanticscholar_papers (
-                doi_normalized,
-                openalex_id,
-                s2_found,
-                tldr_text
-            )
-            VALUES (?, ?, 1, ?)
-            ON CONFLICT(doi_normalized) DO UPDATE SET
-                openalex_id = excluded.openalex_id,
-                s2_found = excluded.s2_found,
-                tldr_text = excluded.tldr_text
-        """, (doi_normalized, openalex_id, tldr_text))
+            cur.execute("""
+                INSERT INTO semanticscholar_papers (
+                    doi_normalized, openalex_id, s2_found, tldr_text, abstract_text
+                )
+                VALUES (?, ?, 1, ?, ?)
+                ON CONFLICT(doi_normalized) DO UPDATE SET
+                    openalex_id = excluded.openalex_id,
+                    s2_found = excluded.s2_found,
+                    tldr_text = excluded.tldr_text,
+                    abstract_text = excluded.abstract_text
+            """, (doi_normalized, openalex_id, tldr_text, abstract_text))
 
     conn.commit()
     conn.close()
@@ -168,12 +173,25 @@ def get_pending_openalex_rows(limit=None):
 
 def enrich_semantic_scholar(limit=None):
     rows = get_pending_openalex_rows(limit=limit)
+    total = len(rows)
 
-    for i, (openalex_id, doi_normalized) in enumerate(rows, start=1):
-        payload = fetch_s2_tldr_for_doi(doi_normalized)
-        upsert_s2_result(openalex_id, doi_normalized, payload)
+    # Process in batches of BATCH_SIZE, 1 request per second
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch = rows[batch_start:batch_start + BATCH_SIZE]
+        doi_list = [doi for _, doi in batch]
 
-        print(f"[S2] {i}/{len(rows)} {doi_normalized}")
+        payloads = fetch_s2_batch(doi_list)
+
+        # S2 returns null for papers it doesn't know — normalize to None
+        if payloads is None:
+            payloads = [None] * len(batch)
+        else:
+            payloads = [p if p else None for p in payloads]
+
+        upsert_s2_batch(batch, payloads)
+
+        done = min(batch_start + BATCH_SIZE, total)
+        print(f"[S2] {done}/{total} papers processed")
         time.sleep(SLEEP_SECONDS)
 
 
