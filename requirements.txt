@@ -60,3 +60,4 @@ urllib3==2.6.3
 wcwidth==0.6.0
 Werkzeug==3.1.8
 zipp==3.23.0
+scikit-learn==1.7.2
