@@ -31,8 +31,8 @@ OPENALEX_BASE = "https://api.openalex.org/works"
 DB_PATH = REPO_ROOT / "papers.db"
 
 # Scraping parameters
-YEAR = 2026  # Year to filter papers by
-TARGET = 90_000  # Target number of papers to collect
+YEARS = [2025]  # Publication years to scrape
+TARGET = 500_000  # Target number of papers to collect per year
 
 # OpenAlex API fields to retrieve for each paper
 OPENALEX_SELECT = ",".join([
@@ -446,11 +446,13 @@ def scrape_openalex_year(year, target):
 if __name__ == "__main__":
     # Initialize the database schema
     init_db()
-    
+
     # Fill in any missing normalized DOI values from existing data
     backfill_doi_normalized()
-    
-    # Begin scraping papers from OpenAlex
-    scrape_openalex_year(YEAR, TARGET)
-    
+
+    # Scrape each requested year independently so checkpoints remain year-specific.
+    for year in YEARS:
+        print(f"Starting OpenAlex scrape for {year}...")
+        scrape_openalex_year(year, TARGET)
+
     print("Done.")
