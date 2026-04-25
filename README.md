@@ -84,6 +84,11 @@ Then open your browser to `http://127.0.0.1:8050`
 
 ```
 .
+├── notebooks/
+│   ├── kmeans_model.ipynb         # K-Means clustering exploration
+│   ├── decisiontree_model.ipynb   # Decision tree exploration
+│   ├── neural_network_model.ipynb # Autoencoder exploration
+│   └── homework-3-notebook.ipynb  # EDA / misc
 ├── data/
 │   ├── scrape_open_alex.py        # scrapes papers from OpenAlex API
 │   ├── scrape_semantic_scholar.py # scrapes tldr + abstracts from Semantic Scholar
