@@ -60,6 +60,16 @@ Open the notebook in VS Code and select the `.venv` kernel:
 data/eda.ipynb
 ```
 
+### Build model artifacts (required once before first run, or after updating data)
+
+This trains all three models (K-Means, Decision Tree, Autoencoder) and writes the files the dashboard needs into `artifacts/`. Takes ~10–20 minutes.
+
+```bash
+python scripts/build_artifacts.py
+```
+
+The pre-built artifacts are already committed to the repo, so **you can skip this step** unless you've added new scraped data or changed the models.
+
 ### Run the dashboard
 
 ```bash
@@ -74,13 +84,25 @@ Then open your browser to `http://127.0.0.1:8050`
 
 ```
 .
+├── notebooks/
+│   ├── kmeans_model.ipynb         # K-Means clustering exploration
+│   ├── decisiontree_model.ipynb   # Decision tree exploration
+│   ├── neural_network_model.ipynb # Autoencoder exploration
+│   └── homework-3-notebook.ipynb  # EDA / misc
 ├── data/
-│   ├── scrape_open_alex.py       # scrapes papers from OpenAlex API
-│   ├── scrape_semantic_scholar.py # scrapes tldr field from Semantic Scholar
-│   └── eda.ipynb                 # exploratory data analysis
+│   ├── scrape_open_alex.py        # scrapes papers from OpenAlex API
+│   ├── scrape_semantic_scholar.py # scrapes tldr + abstracts from Semantic Scholar
+│   └── eda.ipynb                  # exploratory data analysis
+├── scripts/
+│   └── build_artifacts.py         # trains models + writes artifacts/ (run once)
+├── artifacts/                     # pre-built model outputs (committed to git)
+│   ├── paper_records.parquet      # per-paper metadata + model outputs
+│   ├── ae_embeddings.npz          # autoencoder latent vectors
+│   ├── dt_feature_importance.parquet
+│   └── summary.json               # hyperparameters + headline metrics
 ├── frontend/
-│   └── app.py                    # Dash dashboard
-├── papers.db                     # SQLite database (not committed to git)
+│   └── app.py                     # Dash dashboard
+├── papers.db                      # SQLite database (not committed to git, 418 MB)
 ├── requirements.txt
 └── README.md
 ```

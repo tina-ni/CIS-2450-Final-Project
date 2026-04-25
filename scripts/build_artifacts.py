@@ -136,38 +136,9 @@ X_all   = hstack([struct_all_s,   abs_all,   tldr_all],   format="csr")
 print(f"       feature matrix shape: {X_all.shape}")
 
 # ---------------------------------------------------------------------------
-# 3. K-Means
+# 3. Decision Tree
 # ---------------------------------------------------------------------------
-print("[3/6] Fitting K-Means…")
-K_CANDIDATES = [6, 8, 10, 12, 14, 16]
-def sampled_sil(X, labels, n=3000):
-    if X.shape[0] <= n:
-        return silhouette_score(X, labels)
-    rng = np.random.default_rng(SEED)
-    idx = rng.choice(X.shape[0], size=n, replace=False)
-    return silhouette_score(X[idx], labels[idx])
-
-km_scores = []
-for k in K_CANDIDATES:
-    km = KMeans(n_clusters=k, random_state=SEED, n_init=10).fit(X_train)
-    km_scores.append({"k": k, "val_silhouette": sampled_sil(X_val, km.predict(X_val))})
-best_km = max(km_scores, key=lambda r: r["val_silhouette"])
-best_k = int(best_km["k"])
-print(f"       best k = {best_k} (val silhouette = {best_km['val_silhouette']:.3f})")
-
-kmeans = KMeans(n_clusters=best_k, random_state=SEED, n_init=10).fit(X_train)
-cluster_all = kmeans.predict(X_all)
-test_labels = kmeans.predict(X_test)
-test_silhouette = sampled_sil(X_test, test_labels)
-
-# 2D projection for scatter (fit on train, transform all)
-km_proj = TruncatedSVD(n_components=2, random_state=SEED).fit(X_train)
-km_2d_all = km_proj.transform(X_all).astype(np.float32)
-
-# ---------------------------------------------------------------------------
-# 4. Decision Tree
-# ---------------------------------------------------------------------------
-print("[4/6] Fitting Decision Tree…")
+print("[3/6] Fitting Decision Tree…")
 # Binarize at 95th pctile (>=1 in this dataset)
 cutoff = max(1, int(df.select(pl.col("cited_by_count").quantile(0.95, interpolation="nearest")).item()))
 y_all = (df["cited_by_count"].fill_null(0).to_numpy() >= cutoff).astype(int)
@@ -208,13 +179,23 @@ dt_final = DecisionTreeClassifier(max_depth=best_depth, random_state=SEED, class
 dt_pred_test = dt_final.predict(DT_X_test)
 dt_prob_all = dt_final.predict_proba(DT_X_all)[:, 1].astype(np.float32)
 
+# Load abstract vocab saved by vectorize_semantic_scholar_abstracts.py for readable names
+vocab_path = ART_DIR / "abstract_vocab.json"
+if vocab_path.exists():
+    abs_vocab = json.load(vocab_path.open())
+    abs_feat_names = [f'abstract: "{w}"' for w in abs_vocab]
+else:
+    abs_feat_names = [f"abs_{i}" for i in range(abs_train.shape[1])]
+
 dt_feature_names = (
-    ["publication_year", "log_author_count"]
+    ["publication year", "log author count"]
     + dt_cat_enc.get_feature_names_out(dt_cat_cols).tolist()
-    + [f"abs_{i}" for i in range(abs_train.shape[1])]
+    + abs_feat_names
 )
 importances = dt_final.feature_importances_
-top_imp_idx = np.argsort(importances)[::-1][:20]
+# Only keep features with non-trivial importance
+top_imp_idx = np.argsort(importances)[::-1]
+top_imp_idx = [i for i in top_imp_idx if importances[i] > 0.005][:20]
 dt_feat_df = pl.DataFrame({
     "feature":    [dt_feature_names[i] for i in top_imp_idx],
     "importance": [float(importances[i]) for i in top_imp_idx],
@@ -233,7 +214,7 @@ dt_metrics = {
 # ---------------------------------------------------------------------------
 # 5. Autoencoder
 # ---------------------------------------------------------------------------
-print("[5/6] Fitting Autoencoder…")
+print("[4/6] Fitting Autoencoder…")
 SVD_DIM = 150
 pre_svd = TruncatedSVD(n_components=SVD_DIM, random_state=SEED).fit(X_train)
 D_train = pre_svd.transform(X_train).astype(np.float32)
@@ -309,11 +290,41 @@ trainer.save_checkpoint(str(ART_DIR / "autoencoder.ckpt"))
 
 final.eval()
 with torch.no_grad():
-    ae_all = final.encoder(torch.from_numpy(D_all)).numpy().astype(np.float32)
+    ae_train = final.encoder(torch.from_numpy(D_train)).numpy().astype(np.float32)
+    ae_val   = final.encoder(torch.from_numpy(D_val)).numpy().astype(np.float32)
+    ae_test  = final.encoder(torch.from_numpy(D_test)).numpy().astype(np.float32)
+    ae_all   = final.encoder(torch.from_numpy(D_all)).numpy().astype(np.float32)
 
 # 2D projection of the latent space for the dashboard's scatter
 ae_proj = TruncatedSVD(n_components=2, random_state=SEED).fit(ae_all)
 ae_2d_all = ae_proj.transform(ae_all).astype(np.float32)
+
+# ---------------------------------------------------------------------------
+# 5. K-Means — fit on AE latent embeddings so clusters align with the scatter
+# ---------------------------------------------------------------------------
+print("[5/6] Fitting K-Means on AE embeddings…")
+K_CANDIDATES = [6, 8, 10, 12, 14, 16]
+
+def sampled_sil(X, labels, n=3000):
+    if X.shape[0] <= n:
+        return silhouette_score(X, labels)
+    rng = np.random.default_rng(SEED)
+    idx = rng.choice(X.shape[0], size=n, replace=False)
+    return silhouette_score(X[idx], labels[idx])
+
+km_scores = []
+for k in K_CANDIDATES:
+    km = KMeans(n_clusters=k, random_state=SEED, n_init=10).fit(ae_train)
+    km_scores.append({"k": k, "val_silhouette": sampled_sil(ae_val, km.predict(ae_val))})
+    print(f"       k={k}  val_silhouette={km_scores[-1]['val_silhouette']:.3f}")
+best_km = max(km_scores, key=lambda r: r["val_silhouette"])
+best_k = int(best_km["k"])
+print(f"       best k = {best_k} (val silhouette = {best_km['val_silhouette']:.3f})")
+
+kmeans = KMeans(n_clusters=best_k, random_state=SEED, n_init=10).fit(ae_train)
+cluster_all = kmeans.predict(ae_all)
+test_labels = kmeans.predict(ae_test)
+test_silhouette = sampled_sil(ae_test, test_labels)
 
 # ---------------------------------------------------------------------------
 # 6. Write artifacts
@@ -325,8 +336,6 @@ records = df.select([
     "primary_field", "primary_domain", "tldr_text",
 ]).with_columns([
     pl.Series("kmeans_cluster", cluster_all.astype(np.int32)),
-    pl.Series("kmeans_2d_x",    km_2d_all[:, 0]),
-    pl.Series("kmeans_2d_y",    km_2d_all[:, 1]),
     pl.Series("dt_prob",        dt_prob_all),
     pl.Series("dt_pred",        (dt_prob_all >= 0.5).astype(np.int32)),
     pl.Series("highly_cited",   y_all.astype(np.int32)),

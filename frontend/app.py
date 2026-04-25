@@ -109,9 +109,9 @@ def ranked_neighbors(query_idx: int, k: int = 10) -> pl.DataFrame:
     top = top[np.argsort(-sims[top])]
     return (
         papers[top.tolist()]
-        .select(["title", "primary_topic", "primary_subfield", "publication_year", "cited_by_count", "doi"])
+        .select(["title", "primary_subfield", "publication_year", "cited_by_count"])
         .with_columns(pl.Series("similarity", [float(s) for s in sims[top]]))
-        .select(["similarity", "title", "primary_topic", "primary_subfield", "publication_year", "cited_by_count", "doi"])
+        .select(["similarity", "title", "primary_subfield", "publication_year", "cited_by_count"])
     )
 
 
@@ -130,9 +130,9 @@ def kmeans_cluster_neighbors(query_idx: int, k: int = 10) -> pl.DataFrame:
     chosen = idx_in_cluster[order]
     return (
         papers[chosen.tolist()]
-        .select(["title", "primary_topic", "primary_subfield", "publication_year", "cited_by_count"])
+        .select(["title", "primary_subfield", "publication_year", "cited_by_count"])
         .with_columns(pl.Series("similarity", [float(s) for s in sims[order]]))
-        .select(["similarity", "title", "primary_topic", "primary_subfield", "publication_year", "cited_by_count"])
+        .select(["similarity", "title", "primary_subfield", "publication_year", "cited_by_count"])
     )
 
 
@@ -246,6 +246,16 @@ def _heatmap_subfield_cluster():
 # ---------------------------------------------------------------------------
 # Tab 2: K-Means
 # ---------------------------------------------------------------------------
+def _cluster_label(c: int) -> str:
+    """Return 'Cluster N · Top Subfield' for dropdown readability."""
+    top = (
+        papers.filter(pl.col("kmeans_cluster") == c)["primary_subfield"]
+        .drop_nulls().value_counts().sort("count", descending=True)
+    )
+    label = top[0, "primary_subfield"] if top.height > 0 else "Mixed"
+    return f"Cluster {c} · {label}"
+
+
 def kmeans_layout():
     if not ARTIFACTS_OK:
         return html.Div("Run scripts/build_artifacts.py to populate this tab.")
@@ -255,29 +265,32 @@ def kmeans_layout():
     return html.Div([
         dcc.Markdown(
             f"### K-Means paper clusters\n"
-            f"Unsupervised clustering on the 3,025-dim sparse feature matrix (structured + "
+            f"Unsupervised clustering on the 3,058-dim sparse feature matrix (structured + "
             f"abstract TF-IDF + TLDR TF-IDF). Selected **k = {km.get('k','?')}** by validation "
             f"silhouette ({km.get('val_silhouette', 0):.3f}); held-out test silhouette "
-            f"{km.get('test_silhouette', 0):.3f}."
+            f"{km.get('test_silhouette', 0):.3f}. Points are projected to 2D using the "
+            f"autoencoder latent space for a cleaner view."
         ),
 
         html.Div([
-            html.Label("Highlight cluster:"),
+            html.Label("Select a cluster:"),
             dcc.Dropdown(
                 id="km-cluster-filter",
                 options=[{"label": "(all clusters)", "value": -1}] +
-                        [{"label": f"Cluster {c}", "value": c} for c in clusters],
+                        [{"label": _cluster_label(c), "value": c} for c in clusters],
                 value=-1, clearable=False,
-                style={"width": "220px"},
+                style={"width": "340px"},
             ),
         ], className="control-row"),
 
         dcc.Graph(id="km-scatter"),
         dcc.Markdown(
-            "*Each dot is one paper projected to 2D by TruncatedSVD on the combined sparse "
-            "features. Good clusters form visible blobs; fuzzy boundaries are where the "
-            "unsupervised model is guessing. Hover to see the paper.*"
+            "*Each dot is one paper. Position = autoencoder 2D projection; color = K-Means "
+            "cluster assignment. Select a cluster from the dropdown to highlight it and see "
+            "its profile below.*"
         ),
+
+        html.Div(id="km-cluster-profile"),
 
         html.H4("Most-cited papers in the selected cluster"),
         html.Div(id="km-cluster-table"),
@@ -302,13 +315,13 @@ def dt_layout():
             f"**F1 {dt.get('f1',0):.2f}**."
         ),
 
-        html.Div([
-            html.Label("Pick a paper (title / DOI / OpenAlex ID / row number):"),
-            dcc.Input(id="dt-query", type="text",
-                      placeholder="e.g. 0 or part of a title",
-                      debounce=True, style={"width": "70%"}),
-            html.Button("Predict", id="dt-btn", n_clicks=0),
-        ], className="control-row"),
+        dcc.Dropdown(
+            id="dt-query",
+            placeholder="Type a paper title to search…",
+            searchable=True,
+            clearable=True,
+            style={"fontSize": "13px", "marginBottom": "12px"},
+        ),
 
         html.Div(id="dt-output"),
 
@@ -349,13 +362,13 @@ def ae_layout():
             f"{cfg.get('lr','?')}. Similarity = cosine distance in the latent space."
         ),
 
-        html.Div([
-            html.Label("Find papers similar to:"),
-            dcc.Input(id="ae-query", type="text",
-                      placeholder="title / DOI / OpenAlex ID / row number",
-                      debounce=True, style={"width": "70%"}),
-            html.Button("Search", id="ae-btn", n_clicks=0),
-        ], className="control-row"),
+        dcc.Dropdown(
+            id="ae-query",
+            placeholder="Type a paper title to search…",
+            searchable=True,
+            clearable=True,
+            style={"fontSize": "13px", "marginBottom": "12px"},
+        ),
 
         html.Div(id="ae-query-summary"),
 
@@ -465,6 +478,53 @@ app.layout = html.Div([
 # ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
+
+def _paper_search_options(search_val: str, max_results: int = 25) -> list:
+    """Return dropdown options matching the typed query (case-insensitive substring)."""
+    if not search_val or len(search_val) < 2 or not ARTIFACTS_OK:
+        return []
+    q = search_val.strip().lower()
+    titles = papers["title"].fill_null("").to_numpy()
+    opts = []
+    for i, t in enumerate(titles):
+        if q in t.lower():
+            opts.append({"label": t, "value": i})
+            if len(opts) >= max_results:
+                break
+    return opts
+
+
+def _ensure_selected(opts: list, current_val) -> list:
+    """Always include the currently selected paper in options so its label renders."""
+    if current_val is None:
+        return opts
+    idx = int(current_val)
+    if not any(o["value"] == idx for o in opts):
+        title = papers["title"][idx] if ARTIFACTS_OK else f"Paper {idx}"
+        opts = [{"label": title, "value": idx}] + opts
+    return opts
+
+
+@app.callback(
+    Output("dt-query", "options"),
+    Input("dt-query", "search_value"),
+    State("dt-query", "value"),
+    prevent_initial_call=True,
+)
+def _dt_search_options(search_val, current_val):
+    return _ensure_selected(_paper_search_options(search_val), current_val)
+
+
+@app.callback(
+    Output("ae-query", "options"),
+    Input("ae-query", "search_value"),
+    State("ae-query", "value"),
+    prevent_initial_call=True,
+)
+def _ae_search_options(search_val, current_val):
+    return _ensure_selected(_paper_search_options(search_val), current_val)
+
+
 @app.callback(Output("tab-content", "children"), Input("tabs", "value"))
 def _render_tab(tab):
     return {
@@ -478,33 +538,72 @@ def _render_tab(tab):
 # --- K-Means tab ---
 @app.callback(
     Output("km-scatter", "figure"),
+    Output("km-cluster-profile", "children"),
     Output("km-cluster-table", "children"),
     Input("km-cluster-filter", "value"),
 )
 def _update_kmeans(cluster_sel):
-    d = papers.to_pandas()
+    # Sample for performance — up to 6000 points
+    rng = np.random.default_rng(0)
+    n = papers.height
+    idx = np.arange(n) if n <= 6000 else rng.choice(n, size=6000, replace=False)
+    d = papers[idx.tolist()].to_pandas()
     d["cluster_str"] = d["kmeans_cluster"].astype(str)
+
+    # Use AE 2D projection — much cleaner visual than raw SVD on sparse TF-IDF
     fig = px.scatter(
-        d, x="kmeans_2d_x", y="kmeans_2d_y", color="cluster_str",
+        d, x="ae_2d_x", y="ae_2d_y", color="cluster_str",
         hover_data={"title": True, "primary_subfield": True,
                     "publication_year": True,
-                    "kmeans_2d_x": False, "kmeans_2d_y": False,
+                    "ae_2d_x": False, "ae_2d_y": False,
                     "cluster_str": False},
         labels={"cluster_str": "Cluster",
-                "kmeans_2d_x": "Component 1", "kmeans_2d_y": "Component 2"},
-        title="Papers colored by K-Means cluster (TruncatedSVD 2D projection)",
+                "ae_2d_x": "Component 1", "ae_2d_y": "Component 2"},
+        title="Papers colored by K-Means cluster (autoencoder 2D projection)",
     )
-    fig.update_traces(marker=dict(size=5), opacity=0.55)
+    fig.update_traces(marker=dict(size=4), opacity=0.5)
     if cluster_sel is not None and cluster_sel != -1:
         for tr in fig.data:
-            tr.marker.opacity = 0.95 if tr.name == str(cluster_sel) else 0.12
+            tr.marker.opacity = 0.9 if tr.name == str(cluster_sel) else 0.08
     fig.update_layout(height=560, legend={"title": "Cluster"})
 
-    sample = d
+    # Cluster profile card
     if cluster_sel is not None and cluster_sel != -1:
-        sample = d[d["kmeans_cluster"] == cluster_sel]
+        cl = papers.filter(pl.col("kmeans_cluster") == cluster_sel)
+        total = cl.height
+        top_sub = (cl["primary_subfield"].drop_nulls()
+                   .value_counts().sort("count", descending=True).head(5))
+        top_topic = (cl["primary_topic"].drop_nulls()
+                     .value_counts().sort("count", descending=True).head(5))
+        profile = html.Div([
+            html.H4(f"Cluster {cluster_sel} profile — {total:,} papers"),
+            html.Div([
+                html.Div([
+                    html.Div("Top subfields", style={"fontWeight": 600, "marginBottom": "6px"}),
+                    html.Ul([
+                        html.Li(f"{row[0]}  ({row[1]:,} papers, {100*row[1]/total:.0f}%)")
+                        for row in top_sub.iter_rows()
+                    ]),
+                ], style={"flex": 1}),
+                html.Div([
+                    html.Div("Top topics", style={"fontWeight": 600, "marginBottom": "6px"}),
+                    html.Ul([
+                        html.Li(f"{row[0]}  ({row[1]:,} papers, {100*row[1]/total:.0f}%)")
+                        for row in top_topic.iter_rows()
+                    ]),
+                ], style={"flex": 1}),
+            ], style={"display": "flex", "gap": "32px"}),
+        ], style={"background": "white", "padding": "16px 20px",
+                  "borderRadius": "10px", "boxShadow": "0 1px 3px rgba(0,0,0,0.06)",
+                  "margin": "8px 0 16px"})
+    else:
+        profile = html.Div()
+
+    # Most-cited table
+    full = papers.to_pandas()
+    sample = full if cluster_sel is None or cluster_sel == -1 else full[full["kmeans_cluster"] == cluster_sel]
     sample = (sample[["title", "primary_topic", "primary_subfield",
-                      "publication_year", "cited_by_count", "kmeans_cluster"]]
+                       "publication_year", "cited_by_count", "kmeans_cluster"]]
               .sort_values("cited_by_count", ascending=False).head(15))
     tbl = dash_table.DataTable(
         data=sample.to_dict("records"),
@@ -515,21 +614,20 @@ def _update_kmeans(cluster_sel):
         style_header={"backgroundColor": "#eef1f5", "fontWeight": "600"},
         page_size=15,
     )
-    return fig, tbl
+    return fig, profile, tbl
 
 
 # --- Decision Tree tab ---
 @app.callback(
     Output("dt-output", "children"),
-    Input("dt-btn", "n_clicks"),
-    State("dt-query", "value"),
+    Input("dt-query", "value"),
 )
-def _predict_dt(_n, query):
-    if not query:
-        return html.Div("Enter a paper to see the model's prediction.",
+def _predict_dt(query):
+    if query is None:
+        return html.Div("Select a paper above to see the model's prediction.",
                         style={"color": "#97a0a8"})
-    idx = resolve_paper_index(query)
-    if idx is None:
+    idx = int(query)
+    if not (0 <= idx < papers.height):
         return html.Div("No matching paper.", style={"color": "#c0392b"})
     row = papers[idx]
     prob = float(row["dt_prob"][0])
@@ -579,9 +677,18 @@ def _tbl(df: pl.DataFrame):
         data=data.to_dict("records"),
         columns=[{"name": c.replace("_", " ").title(), "id": c} for c in data.columns],
         style_cell={"textAlign": "left", "padding": "6px",
-                    "fontFamily": "inherit", "fontSize": "13px",
-                    "whiteSpace": "normal", "height": "auto", "maxWidth": "400px"},
-        style_header={"backgroundColor": "#eef1f5", "fontWeight": "600"},
+                    "fontFamily": "inherit", "fontSize": "12px",
+                    "overflow": "hidden", "textOverflow": "ellipsis",
+                    "whiteSpace": "nowrap"},
+        style_cell_conditional=[
+            {"if": {"column_id": "similarity"},       "width": "70px",  "textAlign": "center"},
+            {"if": {"column_id": "title"},            "width": "45%",   "whiteSpace": "normal"},
+            {"if": {"column_id": "primary_subfield"}, "width": "25%"},
+            {"if": {"column_id": "publication_year"}, "width": "55px",  "textAlign": "center"},
+            {"if": {"column_id": "cited_by_count"},   "width": "55px",  "textAlign": "center"},
+        ],
+        style_header={"backgroundColor": "#eef1f5", "fontWeight": "600", "fontSize": "12px"},
+        style_table={"tableLayout": "fixed", "width": "100%"},
         page_size=10,
     )
 
@@ -591,17 +698,16 @@ def _tbl(df: pl.DataFrame):
     Output("ae-results", "children"),
     Output("km-results", "children"),
     Output("ae-scatter", "figure"),
-    Input("ae-btn", "n_clicks"),
-    State("ae-query", "value"),
+    Input("ae-query", "value"),
 )
-def _search_similar(_n, query):
+def _search_similar(query):
     default_scatter = _ae_scatter()
-    if not query:
-        return (html.Div("Enter a paper above to see its neighbors.",
+    if query is None:
+        return (html.Div("Select a paper above to see its neighbors.",
                          style={"color": "#97a0a8"}),
                 html.Div(), html.Div(), default_scatter)
-    idx = resolve_paper_index(query)
-    if idx is None:
+    idx = int(query)
+    if not (0 <= idx < papers.height):
         return (html.Div("No matching paper.", style={"color": "#c0392b"}),
                 html.Div(), html.Div(), default_scatter)
 
