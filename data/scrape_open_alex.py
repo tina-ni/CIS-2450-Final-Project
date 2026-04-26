@@ -31,7 +31,7 @@ OPENALEX_BASE = "https://api.openalex.org/works"
 DB_PATH = REPO_ROOT / "papers.db"
 
 # Scraping parameters
-YEARS = [2025]  # Publication years to scrape
+YEARS = [2025, 2026]  # Publication years to scrape
 TARGET = 500_000  # Target number of papers to collect per year
 
 # OpenAlex API fields to retrieve for each paper

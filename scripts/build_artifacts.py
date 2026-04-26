@@ -82,11 +82,10 @@ train_df = df[train_idx]; val_df = df[val_idx]; test_df = df[test_idx]
 # ---------------------------------------------------------------------------
 print("[2/6] Building feature matrices…")
 CATEGORICAL_FEATURES = ["primary_topic", "primary_subfield"]
-YEAR_FILL = 2026
 
 def build_structured(frame, reference_columns=None):
     encoded = (frame.select([
-        pl.col("publication_year").fill_null(YEAR_FILL).cast(pl.Float64),
+        pl.col("publication_year").cast(pl.Float64),
         pl.col("author_count").fill_null(0).clip(lower_bound=0).log1p().alias("log_author_count"),
         *[pl.col(c).fill_null("Unknown") for c in CATEGORICAL_FEATURES],
     ]).to_dummies(columns=CATEGORICAL_FEATURES))
@@ -148,7 +147,7 @@ y_train = y_all[train_idx]; y_val = y_all[val_idx]; y_test = y_all[test_idx]
 dt_cat_cols = ["primary_topic", "primary_subfield", "primary_field", "primary_domain"]
 def dt_num(frame):
     return frame.select([
-        pl.lit(2026.0).alias("publication_year"),
+        pl.col("publication_year").cast(pl.Float64).alias("publication_year"),
         pl.col("author_count").fill_null(0).clip(lower_bound=0).log1p().cast(pl.Float64).alias("log_author_count"),
     ]).to_numpy()
 
