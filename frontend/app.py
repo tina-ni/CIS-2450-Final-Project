@@ -11,7 +11,7 @@ Tabs
 ----
 1. Overview & EDA      High-level stats + the three EDA charts that informed modeling.
 2. K-Means Clusters    2D scatter of unsupervised paper clusters, filterable + annotated.
-3. Citation Predictor  Decision-tree "highly cited?" probability for any existing paper.
+3. Citation Predictor  Decision-tree "cited at least once?" probability for any existing paper.
 4. Similarity Search   Autoencoder-based nearest neighbors for any paper (headline feature).
 """
 from __future__ import annotations
@@ -116,8 +116,7 @@ def ranked_neighbors(query_idx: int, k: int = 10) -> pl.DataFrame:
 
 
 def kmeans_cluster_neighbors(query_idx: int, k: int = 10) -> pl.DataFrame:
-    """Top-k papers in the same K-Means cluster by autoencoder-latent cosine.
-    Reuses the AE latent for distance so both panels are directly comparable."""
+    """Top-k papers in the same K-Means cluster by autoencoder-latent cosine."""
     q = ae_emb[query_idx:query_idx + 1]
     cluster = int(papers["kmeans_cluster"][query_idx])
     mask = (papers["kmeans_cluster"].to_numpy() == cluster)
@@ -155,7 +154,8 @@ def eda_layout():
     sub_counts = papers["primary_subfield"].value_counts().sort("count", descending=True)
     top_sub = sub_counts[0, "primary_subfield"]
     avg_authors = float(papers["author_count"].mean())
-    pct_cited = 100 * float(papers["highly_cited"].mean())
+    label_col = "quickly_cited_once" if "quickly_cited_once" in papers.columns else "highly_cited"
+    pct_cited = 100 * float(papers[label_col].mean())
 
     return html.Div([
         dcc.Markdown(
@@ -184,9 +184,9 @@ def eda_layout():
         dcc.Markdown("#### How citations are distributed"),
         dcc.Graph(id="eda-citations", figure=_citation_hist()),
         dcc.Markdown(
-            "*The 95th-percentile cutoff for 'highly cited' lands at just **1** citation — "
-            "most 2026 papers have none yet, which is why the Decision Tree tab frames "
-            "this as a coarse yes/no rather than a precise regression.*"
+            "*The Decision Tree notebook uses a simple binary target: whether a paper has at "
+            "least one citation. That makes the model easy to interpret, but it is still only "
+            "a coarse proxy for impact.*"
         ),
 
         dcc.Markdown("#### Subfield \u00d7 K-Means cluster composition"),
@@ -265,11 +265,11 @@ def kmeans_layout():
     return html.Div([
         dcc.Markdown(
             f"### K-Means paper clusters\n"
-            f"Unsupervised clustering on the 3,058-dim sparse feature matrix (structured + "
+            f"Unsupervised clustering on the sparse feature matrix (structured + "
             f"abstract TF-IDF + TLDR TF-IDF). Selected **k = {km.get('k','?')}** by validation "
             f"silhouette ({km.get('val_silhouette', 0):.3f}); held-out test silhouette "
-            f"{km.get('test_silhouette', 0):.3f}. Points are projected to 2D using the "
-            f"autoencoder latent space for a cleaner view."
+            f"{km.get('test_silhouette', 0):.3f}. Points are projected to 2D with "
+            f"TruncatedSVD fit on the training split."
         ),
 
         html.Div([
@@ -285,7 +285,7 @@ def kmeans_layout():
 
         dcc.Graph(id="km-scatter"),
         dcc.Markdown(
-            "*Each dot is one paper. Position = autoencoder 2D projection; color = K-Means "
+            "*Each dot is one paper. Position = 2D TruncatedSVD projection; color = K-Means "
             "cluster assignment. Select a cluster from the dropdown to highlight it and see "
             "its profile below.*"
         ),
@@ -307,8 +307,8 @@ def dt_layout():
     return html.Div([
         dcc.Markdown(
             f"### Decision-tree citation predictor\n"
-            f"Supervised binary classifier for **`highly_cited` = cited_by_count \u2265 "
-            f"{dt.get('cutoff_citations', 1)}** (the dataset's 95th percentile). Best "
+            f"Supervised binary classifier for **`quickly_cited_once` = cited_by_count \u2265 "
+            f"{dt.get('cutoff_citations', 1)}**. Best "
             f"max_depth = **{dt.get('best_max_depth','?')}** chosen on validation F1.\n\n"
             f"Held-out test \u2014 accuracy {dt.get('accuracy',0):.2f} \u00b7 "
             f"precision {dt.get('precision',0):.2f} \u00b7 recall {dt.get('recall',0):.2f} \u00b7 "
@@ -328,9 +328,11 @@ def dt_layout():
         html.H4("Top 20 features by importance"),
         dcc.Graph(id="dt-feature-importance", figure=_dt_feat_bar()),
         dcc.Markdown(
-            "*Abstract TF-IDF features dominate \u2014 the tree is largely reading the *words* "
-            "in the paper's abstract to guess whether it will be cited. Subfield and author-count "
-            "features show up as secondary signals.*"
+            "*With the notebook-aligned `cited_by_count \u2265 1` target, this tree mostly leans "
+            "on publication year, with author count showing up as a much smaller secondary "
+            "signal. That happens because 2025 papers have had more time to collect at least "
+            "one citation than 2026 papers, so the model is learning time-available-to-be-cited "
+            "almost as much as paper content.*"
         ),
     ])
 
@@ -353,6 +355,16 @@ def ae_layout():
         return html.Div("Run scripts/build_artifacts.py to populate this tab.")
     ae = summary.get("autoencoder", {})
     cfg = ae.get("best_config") or {}
+    metric_bits = []
+    if "top_5_same_subfield_normalized" in ae:
+        metric_bits.append(f"top-5 same-subfield {ae['top_5_same_subfield_normalized']:.3f}")
+    if "top_10_same_subfield_normalized" in ae:
+        metric_bits.append(f"top-10 {ae['top_10_same_subfield_normalized']:.3f}")
+    if "majority_baseline" in ae:
+        metric_bits.append(f"majority baseline {ae['majority_baseline']:.3f}")
+    metric_line = ""
+    if metric_bits:
+        metric_line = "\n\nHeld-out similarity quality — " + " · ".join(metric_bits) + "."
     return html.Div([
         dcc.Markdown(
             f"### Autoencoder similarity search\n"
@@ -360,6 +372,7 @@ def ae_layout():
             f"latent** \u279c MLP decoder, trained with MSE reconstruction. Best hyperparameters "
             f"via randomized search: hidden_dim = {cfg.get('hidden_dim','?')}, lr = "
             f"{cfg.get('lr','?')}. Similarity = cosine distance in the latent space."
+            f"{metric_line}"
         ),
 
         dcc.Dropdown(
@@ -420,8 +433,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; m
 .control-row button { padding: 8px 16px; background: #2d6cdf; color: white;
                       border: none; border-radius: 6px; cursor: pointer; }
 .control-row button:hover { background: #2557b5; }
-.two-col { display: flex; gap: 24px; margin-top: 14px; }
-.col { flex: 1; min-width: 0; }
+.two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+           gap: 36px; margin-top: 14px; align-items: start; }
+.col { min-width: 0; background: white; padding: 14px 16px; border-radius: 10px;
+       box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.col h4 { margin: 0 0 12px; }
 .banner { background: #fbe9e7; padding: 14px 18px; border-left: 4px solid #c0392b;
           border-radius: 6px; margin-bottom: 18px; font-family: monospace; font-size: 13px; }
 """
@@ -552,14 +568,14 @@ def _update_kmeans(cluster_sel):
 
     # Use AE 2D projection — much cleaner visual than raw SVD on sparse TF-IDF
     fig = px.scatter(
-        d, x="ae_2d_x", y="ae_2d_y", color="cluster_str",
+        d, x="km_2d_x", y="km_2d_y", color="cluster_str",
         hover_data={"title": True, "primary_subfield": True,
                     "publication_year": True,
-                    "ae_2d_x": False, "ae_2d_y": False,
+                    "km_2d_x": False, "km_2d_y": False,
                     "cluster_str": False},
         labels={"cluster_str": "Cluster",
-                "ae_2d_x": "Component 1", "ae_2d_y": "Component 2"},
-        title="Papers colored by K-Means cluster (autoencoder 2D projection)",
+                "km_2d_x": "Component 1", "km_2d_y": "Component 2"},
+        title="Papers colored by K-Means cluster (TruncatedSVD projection)",
     )
     fig.update_traces(marker=dict(size=4), opacity=0.5)
     if cluster_sel is not None and cluster_sel != -1:
@@ -631,9 +647,10 @@ def _predict_dt(query):
         return html.Div("No matching paper.", style={"color": "#c0392b"})
     row = papers[idx]
     prob = float(row["dt_prob"][0])
-    truth = int(row["highly_cited"][0])
+    truth_col = "quickly_cited_once" if "quickly_cited_once" in papers.columns else "highly_cited"
+    truth = int(row[truth_col][0])
     pred = int(prob >= 0.5)
-    verdict = "HIGHLY CITED" if pred else "not highly cited"
+    verdict = "CITED AT LEAST ONCE" if pred else "not cited yet"
     color = "#2d6cdf" if pred else "#6a737c"
 
     gauge = go.Figure(go.Indicator(
@@ -641,7 +658,7 @@ def _predict_dt(query):
         gauge={"axis": {"range": [0, 1]}, "bar": {"color": color},
                "threshold": {"line": {"color": "red", "width": 2},
                              "thickness": 0.75, "value": 0.5}},
-        title={"text": "Predicted probability of being highly cited"},
+        title={"text": "Predicted probability of being cited at least once"},
     ))
     gauge.update_layout(height=260, margin={"l": 20, "r": 20, "t": 50, "b": 20})
 
@@ -658,7 +675,7 @@ def _predict_dt(query):
                 html.Div([html.Strong("Model says: "),
                           html.Span(verdict, style={"color": color, "fontWeight": 600})]),
                 html.Div([html.Strong("Ground truth: "),
-                          "highly cited" if truth else "not highly cited"]),
+                          "cited at least once" if truth else "not cited yet"]),
             ], style={"flex": 1}),
             html.Div(dcc.Graph(figure=gauge, config={"displayModeBar": False}),
                      style={"flex": 1}),
@@ -688,7 +705,7 @@ def _tbl(df: pl.DataFrame):
             {"if": {"column_id": "cited_by_count"},   "width": "55px",  "textAlign": "center"},
         ],
         style_header={"backgroundColor": "#eef1f5", "fontWeight": "600", "fontSize": "12px"},
-        style_table={"tableLayout": "fixed", "width": "100%"},
+        style_table={"tableLayout": "fixed", "width": "100%", "overflowX": "auto"},
         page_size=10,
     )
 
