@@ -94,22 +94,25 @@ Data is written to `papers.db` (SQLite) in the project root. The scripts create 
 ├── notebooks/
 │   ├── kmeans_model.ipynb         # K-Means clustering exploration
 │   ├── decisiontree_model.ipynb   # Decision tree exploration
-│   ├── autoencoder_similarity_model.ipynb # Autoencoder similarity exploration
-│   └── homework-3-notebook.ipynb  # EDA / misc
+│   └── autoencoder_similarity_model.ipynb # Autoencoder similarity exploration
 ├── data/
 │   ├── scrape_open_alex.py        # scrapes papers from OpenAlex API
 │   ├── scrape_semantic_scholar.py # scrapes tldr + abstracts from Semantic Scholar
+│   ├── vectorize_semantic_scholar_abstracts.py # builds abstract vocab + vectors
 │   └── eda.ipynb                  # exploratory data analysis
 ├── scripts/
 │   └── build_artifacts.py         # trains models + writes artifacts/ (run once)
 ├── artifacts/                     # pre-built model outputs (committed to git)
 │   ├── paper_records.parquet      # per-paper metadata + model outputs
 │   ├── ae_embeddings.npz          # autoencoder latent vectors
+│   ├── autoencoder.ckpt           # trained autoencoder checkpoint
+│   ├── dt_model.joblib            # trained decision tree
 │   ├── dt_feature_importance.parquet
+│   ├── abstract_vocab.json
 │   └── summary.json               # hyperparameters + headline metrics
 ├── frontend/
 │   └── app.py                     # Dash dashboard
-├── papers.db                      # SQLite database (not committed to git, 418 MB)
+├── papers.db                      # SQLite database (Git LFS, ~620 MB)
 ├── requirements.txt
 └── README.md
 ```
