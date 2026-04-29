@@ -68,7 +68,7 @@ This trains all three models (K-Means, Decision Tree, Autoencoder) and writes th
 python scripts/build_artifacts.py
 ```
 
-The pre-built artifacts are already committed to the repo, so **you can skip this step** unless you've added new scraped data or changed the models.
+NOTE: We have already pre-built artifacts and they are committed to the repo, so **you can skip this step**! Just run the dashboard!
 
 ### Run the dashboard
 
