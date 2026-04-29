@@ -47,7 +47,7 @@ The dashboard reads headline model metrics from `artifacts/summary.json`, which 
 ---
 **The steps below have already been completed by us (Grace & Tina), so TAs do not need to run them. Feel free to read for a better understanding of our process.**
 
-## Model Building & Analysis
+## Model Building
 
 ### Build model artifacts (required once before first run, or after updating data)
 
@@ -59,7 +59,7 @@ python scripts/build_artifacts.py
 
 ---
 
-## Environment Variables
+## Environment Variables & Data Scraping
 
 You need API keys set in your terminal before running the scraping scripts:
 
