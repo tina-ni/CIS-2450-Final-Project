@@ -57,14 +57,6 @@ This trains all three models (K-Means, Decision Tree, Autoencoder) and writes th
 python scripts/build_artifacts.py
 ```
 
-### Run EDA
-
-Open the notebook in VS Code and select the `.venv` kernel:
-
-```
-data/eda.ipynb
-```
-
 ---
 
 ## Environment Variables
